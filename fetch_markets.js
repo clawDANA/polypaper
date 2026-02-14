@@ -1,39 +1,79 @@
 const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
 
-const DATA_DIR = 'polypaper/data';
-const MARKETS_FILE = `${DATA_DIR}/markets.json`;
+// 1. Directory Structure
+const DATA_DIR = path.resolve(__dirname, 'data');
+const MARKETS_FILE = path.join(DATA_DIR, 'markets.json');
 
+// Ensure data dir exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// 2. Fetch Latest Events (Polymarket Gamma API)
 async function fetchMarkets() {
+  const url = 'https://gamma-api.polymarket.com/events'; // Using Gamma API from clawhub skill
+  console.log(`Fetching latest events from ${url}...`);
+
   try {
-    const url = 'https://clob.polymarket.com/markets'; // Using CLOB API v1
-    console.log(`Fetching markets from ${url}...`);
-    
-    // Note: Polymarket CLOB API might require pagination/filtering
-    // For now, fetch top 20 by volume if possible, or just raw list
     const response = await axios.get(url, {
       params: {
-        limit: 20,
         active: true,
-        closed: false
+        closed: false,
+        limit: 10,
+        order: 'volume', // Sort by volume to find active markets
+        ascending: false
       }
     });
 
-    if (response.status === 200 && response.data) {
-      const markets = response.data.data || response.data; // Adjust based on actual structure
-      console.log(`Fetched ${markets.length} markets.`);
-      
-      fs.writeFileSync(MARKETS_FILE, JSON.stringify(markets, null, 2));
-      console.log(`Saved to ${MARKETS_FILE}`);
-      return markets;
+    if (response.status === 200 && Array.isArray(response.data)) {
+      const events = response.data;
+      console.log(`Fetched ${events.length} top-volume events.`);
+
+      // 3. Process Events into Tradable Markets
+      const processedMarkets = events.map(evt => {
+        // Find the main market (usually the first one or largest volume)
+        const market = evt.markets && evt.markets.length > 0 ? evt.markets[0] : null;
+
+        if (!market) return null;
+
+        // Extract outcomes and prices
+        let outcomes, prices;
+        try {
+          outcomes = JSON.parse(market.outcomes);
+          prices = JSON.parse(market.outcomePrices);
+        } catch (e) {
+          outcomes = [];
+          prices = [];
+        }
+
+        return {
+          event_id: evt.id,
+          title: evt.title,
+          slug: evt.slug,
+          description: evt.description,
+          volume: evt.volume,
+          liquidity: evt.liquidity,
+          market_id: market.id,
+          question: market.question,
+          outcomes: outcomes,
+          prices: prices,
+          url: `https://polymarket.com/event/${evt.slug}`
+        };
+      }).filter(m => m !== null); // Remove empty markets
+
+      // 4. Save
+      fs.writeFileSync(MARKETS_FILE, JSON.stringify(processedMarkets, null, 2));
+      console.log(`Saved ${processedMarkets.length} processed markets to ${MARKETS_FILE}`);
+      return processedMarkets;
+
     } else {
-      console.error('Failed to fetch markets:', response.status, response.statusText);
+      console.error('Failed to fetch events:', response.status);
     }
+
   } catch (error) {
-    console.error('Error fetching markets:', error.message);
-    if (error.response) {
-      console.error('Response data:', error.response.data);
-    }
+    console.error('Error fetching events:', error.message);
   }
 }
 
